@@ -1,0 +1,132 @@
+//! Foreground-process detection + SSH session inheritance.
+//!
+//! Given a PTY child PID, walk its process tree to find the *currently
+//! foregrounded* process inside that PTY. If that process is `ssh`, parse its
+//! command line to figure out how to re-launch the same connection in a new
+//! pane (ideally reusing the existing OpenSSH ControlMaster socket, which
+//! requires no auth).
+
+use std::collections::HashMap;
+
+use serde::Serialize;
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System};
+
+use crate::config::LaunchSpec;
+
+/// Snapshot of what's running on top of a pane's shell.
+#[derive(Debug, Clone, Serialize)]
+pub struct ForegroundInfo {
+    /// PID of the leaf process (deepest descendant in the pane's tree).
+    pub pid: u32,
+    /// Basename of the executable (e.g. `ssh`, `bash`, `vim`).
+    pub name: String,
+    /// Full argv for the leaf process.
+    pub cmd: Vec<String>,
+    /// Working directory of the leaf process if we can read it. Absent on
+    /// platforms / permission setups that don't allow it.
+    pub cwd: Option<String>,
+    /// True if the leaf looks like an `ssh` client.
+    pub is_ssh: bool,
+}
+
+/// Detect the foreground process under a PTY-rooted child PID.
+///
+/// Strategy: build a parent→children map of all processes, then descend from
+/// `root_pid` always taking the most-recently-started child. This works
+/// reliably for the common cases (shell → app, shell → ssh → remote shell on
+/// the local view stops at `ssh`).
+pub fn foreground(root_pid: u32) -> Option<ForegroundInfo> {
+    let mut sys = System::new_with_specifics(
+        RefreshKind::new().with_processes(ProcessRefreshKind::everything()),
+    );
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+
+    // children[parent_pid] = Vec<child_pid>
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (pid, proc_) in sys.processes() {
+        if let Some(parent) = proc_.parent() {
+            children
+                .entry(parent.as_u32())
+                .or_default()
+                .push(pid.as_u32());
+        }
+    }
+
+    let mut current = root_pid;
+    loop {
+        let kids = children.get(&current);
+        match kids {
+            Some(list) if !list.is_empty() => {
+                // Take the most recently started child by start_time.
+                let mut best = list[0];
+                let mut best_start = sys
+                    .process(Pid::from_u32(best))
+                    .map(|p| p.start_time())
+                    .unwrap_or(0);
+                for &cand in &list[1..] {
+                    let t = sys
+                        .process(Pid::from_u32(cand))
+                        .map(|p| p.start_time())
+                        .unwrap_or(0);
+                    if t >= best_start {
+                        best = cand;
+                        best_start = t;
+                    }
+                }
+                current = best;
+            }
+            _ => break,
+        }
+    }
+
+    let proc_ = sys.process(Pid::from_u32(current))?;
+    let name = proc_
+        .exe()
+        .and_then(|p| p.file_name())
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| proc_.name().to_string_lossy().to_string());
+    let cmd: Vec<String> = proc_
+        .cmd()
+        .iter()
+        .map(|s| s.to_string_lossy().to_string())
+        .collect();
+    let cwd = proc_.cwd().map(|p| p.display().to_string());
+
+    let stem = name
+        .to_lowercase()
+        .trim_end_matches(".exe")
+        .to_string();
+    let is_ssh = stem == "ssh";
+
+    Some(ForegroundInfo {
+        pid: current,
+        name,
+        cmd,
+        cwd,
+        is_ssh,
+    })
+}
+
+/// Given the foreground info of the *source* pane and an optional default
+/// fallback, build a `LaunchSpec` for the new (split) pane.
+///
+/// If the source isn't ssh, we just return the fallback (caller chooses what
+/// that is, typically the same profile).
+///
+/// If the source IS ssh, we re-emit the same `ssh` command. When ControlMaster
+/// is configured on the user's side, this is instant and skips auth; when not,
+/// it triggers a fresh login. Either way the user lands on the same remote.
+pub fn build_split_spec(source: &ForegroundInfo, fallback: LaunchSpec) -> LaunchSpec {
+    if !source.is_ssh || source.cmd.is_empty() {
+        return fallback;
+    }
+    let mut cmd = source.cmd.clone();
+    let exe = cmd.remove(0);
+    LaunchSpec {
+        command: exe,
+        args: cmd,
+        cwd: source.cwd.clone(),
+        env: HashMap::new(),
+        profile: Some("ssh-inherit".to_string()),
+    }
+}

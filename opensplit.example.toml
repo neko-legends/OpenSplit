@@ -1,0 +1,40 @@
+# OpenSplit example configuration.
+#
+# Copy to your platform's config dir (or just let OpenSplit auto-create it on
+# first launch):
+#   - Windows: %APPDATA%\opensplit\config.toml
+#   - Linux:   ~/.config/opensplit/config.toml
+#   - macOS:   ~/Library/Application Support/opensplit/config.toml
+
+# Profile launched when you type `opensplit` with no arguments.
+default_profile = "opencode"
+
+# When you split a pane whose foreground process is `ssh`, try to inherit the
+# session (re-run the same `ssh` command, ideally hitting an existing
+# OpenSSH ControlMaster socket). Set to false to always launch the fallback.
+ssh_inherit = true
+
+# Profiles -------------------------------------------------------------------
+# Each profile is `[profiles.<name>]` with:
+#   command = "..."       (executable, resolved on PATH)
+#   args    = ["..."]     (argv)
+#   cwd     = "..."       (optional; defaults to $HOME)
+#   env     = { K = "V" } (optional env overrides)
+
+[profiles.opencode]
+command = "opencode"
+
+[profiles.codex]
+command = "codex"
+
+[profiles.claude]
+command = "claude"
+
+[profiles.aider]
+command = "aider"
+
+[profiles.shell]
+# On Linux/macOS this picks up $SHELL automatically by default; you can pin it:
+# command = "/bin/zsh"
+# args = ["-l"]
+command = "pwsh"

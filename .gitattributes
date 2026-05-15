@@ -1,0 +1,22 @@
+# Normalize line endings to LF in the repo for all text files.
+# Windows checkouts still get CRLF in the working tree via core.autocrlf.
+* text=auto eol=lf
+
+# Force LF for shell scripts even on Windows checkouts.
+*.sh text eol=lf
+
+# Force CRLF for Windows-only batch / powershell.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary assets — never normalize.
+*.png binary
+*.ico binary
+*.icns binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.woff binary
+*.woff2 binary
