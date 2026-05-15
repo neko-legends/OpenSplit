@@ -7,6 +7,7 @@
 use std::{
     collections::HashMap,
     io::{Read, Write},
+    path::{Path, PathBuf},
     sync::Arc,
     thread,
 };
@@ -124,8 +125,14 @@ pub fn spawn(app: &AppHandle, spec: LaunchSpec, cols: u16, rows: u16) -> Result<
         })
         .context("openpty")?;
 
-    let mut cmd = CommandBuilder::new(&spec.command);
-    cmd.args(&spec.args);
+    // Resolve the command against PATH (+PATHEXT on Windows) and, on Windows,
+    // wrap batch files through `cmd.exe /c` since CreateProcess can't execute
+    // .cmd/.bat directly.
+    let (resolved_program, resolved_args) = resolve_program(&spec.command, &spec.args)
+        .with_context(|| format!("resolving `{}`", spec.command))?;
+
+    let mut cmd = CommandBuilder::new(&resolved_program);
+    cmd.args(&resolved_args);
     if let Some(cwd) = spec
         .cwd
         .clone()
@@ -144,10 +151,21 @@ pub fn spawn(app: &AppHandle, spec: LaunchSpec, cols: u16, rows: u16) -> Result<
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
 
+    tracing::debug!(
+        program = %resolved_program,
+        args = ?resolved_args,
+        "spawning pty child"
+    );
+
     let child = pair
         .slave
         .spawn_command(cmd)
-        .with_context(|| format!("spawning `{}`", spec.command))?;
+        .with_context(|| {
+            format!(
+                "spawning `{}` (resolved to `{}`)",
+                spec.command, resolved_program
+            )
+        })?;
     let child_pid = child.process_id();
 
     let mut reader = pair.master.try_clone_reader().context("clone reader")?;
@@ -233,4 +251,170 @@ pub fn spawn(app: &AppHandle, spec: LaunchSpec, cols: u16, rows: u16) -> Result<
 pub fn require<'a>(reg: &'a PaneRegistry, pane_id: &str) -> Result<Arc<Pane>> {
     reg.get(pane_id)
         .ok_or_else(|| anyhow!("unknown pane id: {pane_id}"))
+}
+
+// ---------------------------------------------------------------------------
+// Program resolution
+// ---------------------------------------------------------------------------
+
+/// Resolve `program` against the current `PATH`, returning a tuple of
+/// `(program_to_invoke, full_args)`.
+///
+/// On Windows:
+///   - Honors `PATHEXT` so bare names like `opencode` find `opencode.exe`,
+///     `opencode.cmd`, etc.
+///   - If the resolved file is a batch script (`.cmd` / `.bat`), wraps it via
+///     `cmd.exe /c <path> <args...>` because `CreateProcess` (and therefore
+///     `portable-pty`) cannot execute batch files directly.
+///   - Also augments PATH with well-known per-user install locations that
+///     interactive shells typically pick up via the user profile but that
+///     GUI-launched processes may miss (e.g. `%APPDATA%\npm`).
+///
+/// On Unix: returns `(program, args)` unchanged — execve handles PATH for us.
+fn resolve_program(program: &str, args: &[String]) -> Result<(String, Vec<String>)> {
+    // Absolute / explicit-relative paths bypass PATH lookup entirely.
+    let p = Path::new(program);
+    if p.is_absolute() || program.contains('/') || program.contains('\\') {
+        #[cfg(windows)]
+        {
+            if let Some(found) = which_windows(program) {
+                return Ok(wrap_if_batch(found, args));
+            }
+        }
+        return Ok((program.to_string(), args.to_vec()));
+    }
+
+    #[cfg(windows)]
+    {
+        if let Some(found) = which_windows(program) {
+            return Ok(wrap_if_batch(found, args));
+        }
+        return Err(anyhow!(
+            "could not find `{program}` on PATH (searched with PATHEXT). \
+             Tip: ensure the directory containing it is on your system PATH, \
+             not just your PowerShell profile — GUI apps don't see profile-added PATH entries."
+        ));
+    }
+
+    #[cfg(not(windows))]
+    {
+        // execve will handle PATH lookup; just sanity-check it exists.
+        if which_unix(program).is_some() {
+            return Ok((program.to_string(), args.to_vec()));
+        }
+        return Err(anyhow!(
+            "could not find `{program}` on PATH. \
+             Tip: ensure the directory containing it is on PATH for GUI-launched processes."
+        ));
+    }
+}
+
+#[cfg(windows)]
+fn wrap_if_batch(resolved: PathBuf, args: &[String]) -> (String, Vec<String>) {
+    let is_batch = resolved
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"))
+        .unwrap_or(false);
+
+    if is_batch {
+        // Spawn: cmd.exe /d /c "<resolved>" <args...>
+        // - /d skips per-user AutoRun (faster, more predictable)
+        // - /c runs and exits
+        let mut wrapped_args: Vec<String> =
+            vec!["/d".into(), "/c".into(), resolved.display().to_string()];
+        wrapped_args.extend(args.iter().cloned());
+        let cmd_exe = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into());
+        (cmd_exe, wrapped_args)
+    } else {
+        (resolved.display().to_string(), args.to_vec())
+    }
+}
+
+/// Windows PATH+PATHEXT lookup.
+///
+/// Search order:
+///   1. Each dir in `PATH`
+///   2. Plus a curated list of common per-user install dirs that may not be
+///      on the GUI-process PATH:
+///        - `%APPDATA%\npm`      (npm global bin shims: .cmd / .ps1 / no-ext)
+///        - `%USERPROFILE%\.bun\bin`
+///        - `%USERPROFILE%\.cargo\bin`
+///        - `%USERPROFILE%\scoop\shims`
+///        - `%LOCALAPPDATA%\Programs\<program>` (some installers)
+///
+/// In each dir, try `<name>` as-is first, then each extension in `PATHEXT`.
+#[cfg(windows)]
+fn which_windows(program: &str) -> Option<PathBuf> {
+    let pathext = std::env::var("PATHEXT")
+        .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    let exts: Vec<String> = pathext
+        .split(';')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(path_var) = std::env::var_os("PATH") {
+        dirs.extend(std::env::split_paths(&path_var));
+    }
+    // Augment with well-known user dirs (de-duplicated below).
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        dirs.push(PathBuf::from(appdata).join("npm"));
+    }
+    if let Some(home) = dirs::home_dir() {
+        dirs.push(home.join(".bun").join("bin"));
+        dirs.push(home.join(".cargo").join("bin"));
+        dirs.push(home.join("scoop").join("shims"));
+    }
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        dirs.push(PathBuf::from(local).join("Programs").join(program));
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    for dir in dirs {
+        if !seen.insert(dir.clone()) {
+            continue;
+        }
+        // Try as-is (program already has an extension, e.g. user typed
+        // "opencode.exe") -- but only if it has a dotted extension.
+        if Path::new(program).extension().is_some() {
+            let cand = dir.join(program);
+            if cand.is_file() {
+                return Some(cand);
+            }
+        }
+        // Try each PATHEXT extension.
+        for ext in &exts {
+            let cand = dir.join(format!("{program}{ext}"));
+            if cand.is_file() {
+                return Some(cand);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(windows))]
+#[allow(dead_code)]
+fn which_unix(program: &str) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        let cand = dir.join(program);
+        if cand.is_file() {
+            // Best-effort exec-bit check.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(meta) = std::fs::metadata(&cand) {
+                    if meta.permissions().mode() & 0o111 != 0 {
+                        return Some(cand);
+                    }
+                    continue;
+                }
+            }
+            return Some(cand);
+        }
+    }
+    None
 }
