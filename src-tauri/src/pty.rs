@@ -14,7 +14,9 @@ use std::{
 
 use anyhow::{anyhow, Context, Result};
 use parking_lot::Mutex;
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{
+    native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize,
+};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
@@ -45,6 +47,11 @@ pub struct Pane {
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
+    /// Independent killer that does NOT share a lock with the child-waiter
+    /// thread. Required to avoid a deadlock between `close_pane → kill()` and
+    /// the waiter thread which holds `child` locked for the entire duration
+    /// of `child.wait()`.
+    killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     /// PID of the spawned child, used for foreground-process detection.
     child_pid: Option<u32>,
     spec: LaunchSpec,
@@ -74,9 +81,11 @@ impl Pane {
     }
 
     /// Kill the underlying child process.
+    ///
+    /// Uses the independent `killer` handle (not `child`) because the waiter
+    /// thread is permanently holding `child` locked inside `wait()`.
     pub fn kill(&self) -> Result<()> {
-        let mut c = self.child.lock();
-        let _ = c.kill();
+        let _ = self.killer.lock().kill();
         Ok(())
     }
 
@@ -167,6 +176,8 @@ pub fn spawn(app: &AppHandle, spec: LaunchSpec, cols: u16, rows: u16) -> Result<
             )
         })?;
     let child_pid = child.process_id();
+    // Independent kill handle that doesn't share a lock with the waiter.
+    let killer = child.clone_killer();
 
     let mut reader = pair.master.try_clone_reader().context("clone reader")?;
     let writer = pair.master.take_writer().context("take writer")?;
@@ -177,6 +188,7 @@ pub fn spawn(app: &AppHandle, spec: LaunchSpec, cols: u16, rows: u16) -> Result<
         master: Mutex::new(pair.master),
         writer: Arc::new(Mutex::new(writer)),
         child: Arc::new(Mutex::new(child)),
+        killer: Mutex::new(killer),
         child_pid,
         spec,
     });

@@ -26,14 +26,39 @@
   let resizeObserver: ResizeObserver | null = null;
   let resizeRaf = 0;
 
+  /**
+   * `disposed` is the single source of truth for "this component is dead".
+   * Set the instant `onDestroy` fires. Every async callback (event listener,
+   * RAF, ResizeObserver, IPC promise resolution) checks this before touching
+   * `term` so we can't write to a torn-down xterm.
+   *
+   * This is the fix for the splits-then-crash bug: when a leaf is replaced
+   * with a split, the old Terminal component is destroyed mid-flight while
+   * Tauri events for its paneId are still in flight from the backend.
+   */
+  let disposed = false;
+
   // Buffer chunks that arrive before the terminal is constructed.
   const earlyChunks: string[] = [];
 
+  function safeTermWrite(chunk: string) {
+    if (disposed || !term) return;
+    try {
+      term.write(chunk);
+    } catch (e) {
+      // xterm can throw if the canvas/DOM context is gone but we missed the
+      // dispose race. Log once and stop.
+      console.warn("[opensplit] term.write threw, disposing", e);
+      disposed = true;
+    }
+  }
+
   function scheduleFit() {
+    if (disposed) return;
     if (resizeRaf) cancelAnimationFrame(resizeRaf);
     resizeRaf = requestAnimationFrame(() => {
       resizeRaf = 0;
-      if (!fitAddon || !term) return;
+      if (disposed || !fitAddon || !term) return;
       try {
         fitAddon.fit();
         const cols = term.cols;
@@ -43,32 +68,52 @@
             // pane may have already exited; safe to ignore
           });
         }
-      } catch {
-        /* terminal might be detached; ignore */
+      } catch (e) {
+        // FitAddon will throw if measureText runs against a 0-size container
+        // (briefly the case during split layout). Swallow and try again next
+        // ResizeObserver tick.
+        if (!disposed) {
+          console.debug("[opensplit] fit skipped", e);
+        }
       }
     });
   }
 
   onMount(async () => {
     // Wire event listeners FIRST so we don't miss the opening burst.
-    unlistenData = await onPaneData((e) => {
-      if (e.pane_id !== paneId) return;
-      if (term) {
-        term.write(e.chunk);
+    // BUT — listen() is async, and the component can be destroyed before it
+    // resolves. If so, immediately unlisten the late arrival to avoid leaks.
+    try {
+      const u1 = await onPaneData((e) => {
+        if (disposed || e.pane_id !== paneId) return;
+        if (term) {
+          safeTermWrite(e.chunk);
+        } else {
+          earlyChunks.push(e.chunk);
+        }
+      });
+      if (disposed) {
+        u1();
       } else {
-        earlyChunks.push(e.chunk);
+        unlistenData = u1;
       }
-    });
-    unlistenExit = await onPaneExit((e) => {
-      if (e.pane_id !== paneId) return;
-      if (term) {
-        term.write(
+
+      const u2 = await onPaneExit((e) => {
+        if (disposed || e.pane_id !== paneId) return;
+        safeTermWrite(
           `\r\n\x1b[2m[process exited with code ${e.code ?? "?"}]\x1b[0m\r\n`,
         );
+      });
+      if (disposed) {
+        u2();
+      } else {
+        unlistenExit = u2;
       }
-    });
+    } catch (e) {
+      console.error("[opensplit] failed to attach pty listeners", e);
+    }
 
-    if (!hostEl) return;
+    if (disposed || !hostEl) return;
 
     term = new Terminal({
       fontFamily:
@@ -108,40 +153,62 @@
     term.loadAddon(fitAddon);
     term.loadAddon(new WebLinksAddon());
 
-    term.open(hostEl);
+    try {
+      term.open(hostEl);
+    } catch (e) {
+      console.error("[opensplit] term.open failed", e);
+      return;
+    }
 
     // Flush any buffered output.
-    for (const chunk of earlyChunks) term.write(chunk);
+    for (const chunk of earlyChunks) safeTermWrite(chunk);
     earlyChunks.length = 0;
 
     // User keystrokes → backend PTY.
     term.onData((data) => {
+      if (disposed) return;
       void writePane(paneId, data).catch(() => {
         /* pane may have exited */
       });
     });
 
-    // Track container size.
-    resizeObserver = new ResizeObserver(() => scheduleFit());
+    // Track container size. The observer can fire after dispose, so guard.
+    resizeObserver = new ResizeObserver(() => {
+      if (disposed) return;
+      scheduleFit();
+    });
     resizeObserver.observe(hostEl);
     scheduleFit();
   });
 
   onDestroy(() => {
+    // Flip the flag FIRST so any in-flight callback bails before touching DOM.
+    disposed = true;
     if (resizeRaf) cancelAnimationFrame(resizeRaf);
-    resizeObserver?.disconnect();
+    resizeRaf = 0;
+    try {
+      resizeObserver?.disconnect();
+    } catch {}
     resizeObserver = null;
-    unlistenData?.();
-    unlistenExit?.();
+    try {
+      unlistenData?.();
+    } catch {}
+    try {
+      unlistenExit?.();
+    } catch {}
     unlistenData = null;
     unlistenExit = null;
-    term?.dispose();
+    try {
+      term?.dispose();
+    } catch (e) {
+      console.debug("[opensplit] term.dispose threw", e);
+    }
     term = null;
     fitAddon = null;
   });
 
   export function focus() {
-    term?.focus();
+    if (!disposed) term?.focus();
   }
 </script>
 
