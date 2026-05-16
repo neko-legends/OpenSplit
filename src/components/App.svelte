@@ -212,9 +212,24 @@
   // Focus
   // ---------------------------------------------------------------------------
 
+  /**
+   * Full focus: user clicked inside a pane to interact with it.
+   * Clears the activity dot because they're actively reading output.
+   */
   function focusPane(paneId: string) {
     focusedPaneId = paneId;
     activePane = new Set([...activePane].filter((id) => id !== paneId));
+    focusInstance(paneId);
+  }
+
+  /**
+   * Shallow focus: just track which pane owns keyboard/context-menu actions
+   * WITHOUT clearing its activity dot. Used by right-click (the user might
+   * not have read the output yet — they just want the split menu).
+   */
+  function setFocusedPane(paneId: string) {
+    focusedPaneId = paneId;
+    // Deliberately do NOT touch activePane here.
     focusInstance(paneId);
   }
 
@@ -225,7 +240,7 @@
   function openContextMenu(ev: MouseEvent, paneId: string) {
     ev.preventDefault();
     ev.stopPropagation();
-    focusPane(paneId);
+    setFocusedPane(paneId);          // shallow — keeps activity dot alive
     const hasSelection = getSelection(paneId).length > 0;
     ctxMenu = { x: ev.clientX, y: ev.clientY, paneId, hasSelection };
   }

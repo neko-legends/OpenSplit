@@ -34,7 +34,20 @@
       {/if}
     </div>
     <div class="pane-body">
-      <Terminal paneId={node.paneId} />
+      <!--
+        {#key node.paneId} forces Terminal to unmount+remount whenever the paneId
+        changes on this leaf node (which happens when exit→shell respawn replaces
+        the paneId in-place via replaceLeafPaneId). Without this, Svelte patches
+        the paneId prop on the *existing* Terminal component, whose onMount/attach
+        already ran with the old paneId — so the new shell's xterm instance never
+        gets a host element and the pane is blank.
+        Note: this does NOT destroy the persistent xterm instance (that lives in
+        terminalInstances.ts keyed by paneId). It only destroys+recreates the thin
+        Terminal view component so attach() runs again with the correct new paneId.
+      -->
+      {#key node.paneId}
+        <Terminal paneId={node.paneId} />
+      {/key}
     </div>
   </div>
 {:else}
