@@ -34,6 +34,16 @@
   let switchTargets = $derived(
     availableTools.filter((t) => t.name === "shell" || t.path !== null)
   );
+
+  /**
+   * Track open state via a counter trick instead of mouseenter/mouseleave on
+   * separate elements. The problem with mouseenter/leave on the trigger div is
+   * that when the mouse moves to the submenu (which is `position:absolute;
+   * left:100%` — outside the trigger's layout box), `mouseleave` fires on the
+   * trigger even though the submenu is a DOM child, closing the menu before
+   * the user can click. Fix: wrap both trigger and submenu in a parent element
+   * and listen there instead.
+   */
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -95,23 +105,29 @@
 
   <div class="sep"></div>
 
-  <!-- Switch to → submenu -->
+  <!-- Switch to → submenu.
+       IMPORTANT: the wrapper div captures mouseenter/leave for BOTH the
+       trigger row and the submenu panel. This prevents the close-on-gap bug
+       where mouseleave fires on the trigger as the pointer moves into the
+       absolutely-positioned submenu (which is outside the trigger's layout
+       box, but still inside this wrapper's box). -->
   {#if switchTargets.length > 0}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
-      class="item submenu-trigger"
-      class:open={switchOpen}
+      class="submenu-wrap"
       onmouseenter={() => (switchOpen = true)}
       onmouseleave={() => (switchOpen = false)}
     >
-      <span class="icon" aria-hidden="true">
-        <svg viewBox="0 0 16 16" width="16" height="16">
-          <path d="M3 8h8M8 5l3 3-3 3" fill="none" stroke="currentColor"
-            stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      </span>
-      <span class="label">Switch to</span>
-      <span class="arrow">›</span>
+      <div class="item submenu-trigger" class:open={switchOpen}>
+        <span class="icon" aria-hidden="true">
+          <svg viewBox="0 0 16 16" width="16" height="16">
+            <path d="M3 8h8M8 5l3 3-3 3" fill="none" stroke="currentColor"
+              stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </span>
+        <span class="label">Switch to</span>
+        <span class="arrow">›</span>
+      </div>
 
       {#if switchOpen}
         <div class="submenu">
@@ -212,12 +228,19 @@
   .arrow { font-size: 14px; color: var(--fg-dim); line-height: 1; }
   .sep { height: 1px; background: var(--border); margin: 4px 0; }
 
-  /* Submenu */
+  /* Submenu wrapper — captures hover for both trigger row and panel */
+  .submenu-wrap {
+    position: relative;
+  }
   .submenu-trigger { cursor: default; }
+  .submenu-trigger.open,
+  .submenu-wrap:hover .submenu-trigger {
+    background: var(--menu-hover);
+  }
   .submenu {
     position: absolute;
     left: 100%;
-    top: -4px;
+    top: 0;
     background: var(--menu-bg);
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -225,9 +248,5 @@
     padding: 4px;
     min-width: 180px;
     z-index: 1001;
-  }
-  /* Flip submenu left if it would overflow the right viewport edge */
-  @media (max-width: 500px) {
-    .submenu { left: auto; right: 100%; }
   }
 </style>

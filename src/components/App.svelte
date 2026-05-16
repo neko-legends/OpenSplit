@@ -304,28 +304,32 @@
     const leaf = findLeafByPaneId(tree, paneId);
     if (!leaf) return;
 
-    // Kill the running PTY and destroy its xterm instance.
-    try { await closePane(paneId); } catch {}
-    destroyInstance(paneId);
-
-    // Spawn the new tool. Inherit the old pane's cwd from its last foreground
-    // process if possible, so "switch to codex" opens in the same directory.
+    // Get cwd BEFORE killing the pane (process is still alive at this point).
     let cwd: string | null = null;
     try {
       const fg = await paneForegroundInfo(paneId);
       cwd = fg?.cwd ?? null;
     } catch { /* best-effort */ }
 
+    // Kill the running PTY and destroy its xterm instance.
+    try { await closePane(paneId); } catch {}
+    destroyInstance(paneId);
+
     try {
-      const result = await spawnPane(
-        { kind: "detected", name: tool.name },
-        INITIAL_COLS,
-        INITIAL_ROWS,
-      );
-      const newPaneId = result.pane_id;
-      await createInstance(newPaneId, (data) => {
-        void writePane(newPaneId, data).catch(() => {});
-      });
+      // Use the same spawnAndAttachLeaf path as the picker — it handles
+      // profile lookup, detection, and xterm wiring identically to clicking
+      // a tile in the launcher picker.
+      const source = cwd
+        ? { kind: "spec" as const, spec: {
+            command: tool.path ?? tool.name,
+            args: [] as string[],
+            cwd,
+            env: {} as Record<string, string>,
+            profile: tool.name,
+          }}
+        : { kind: "detected" as const, name: tool.name };
+
+      const { paneId: newPaneId } = await spawnAndAttachLeaf(source, tool.label);
       tree = replaceLeafPaneId(tree, leaf.id, newPaneId, tool.label);
       focusedPaneId = newPaneId;
       focusInstance(newPaneId);
