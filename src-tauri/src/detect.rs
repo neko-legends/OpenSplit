@@ -74,7 +74,8 @@ const CATALOG: &[Candidate] = &[
         label: "Kimi Code",
         description: "Moonshot AI coding agent (Kimi K2)",
         icon: "ai",
-        binaries: &["kimi"],
+        // curl installer puts kimi-cli; uv tool install puts kimi — try both.
+        binaries: &["kimi", "kimi-cli"],
     },
     Candidate {
         name: "sgpt",

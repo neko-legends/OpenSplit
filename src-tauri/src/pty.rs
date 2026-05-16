@@ -470,6 +470,7 @@ pub(crate) fn which_windows(program: &str) -> Option<PathBuf> {
         dirs.push(PathBuf::from(appdata).join("npm"));
     }
     if let Some(home) = dirs::home_dir() {
+        dirs.push(home.join(".local").join("bin")); // uv tool install, pipx, etc.
         dirs.push(home.join(".bun").join("bin"));
         dirs.push(home.join(".cargo").join("bin"));
         dirs.push(home.join("scoop").join("shims"));
