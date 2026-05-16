@@ -69,6 +69,11 @@ export function detectTools(): Promise<DetectedTool[]> {
   return invoke("detect_tools");
 }
 
+/** Cached detection — fast, no re-scan. Use for the context menu. */
+export function getToolsCached(): Promise<DetectedTool[]> {
+  return invoke("get_tools_cached");
+}
+
 export function listProfiles(): Promise<ProfileSummary[]> {
   return invoke("list_profiles");
 }

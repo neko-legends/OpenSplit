@@ -1,146 +1,269 @@
 # OpenSplit
 
-A fast, cross-platform terminal harness for launching and splitting CLI tools
-like [opencode](https://opencode.ai), codex, claude, aider, plain shells, or
-anything else. Right-click any pane to split horizontally or vertically, drag
-the divider to resize, and (optionally) inherit the source pane's SSH session
-into the new split so you don't have to re-authenticate.
+OpenSplit is a fast, cross-platform terminal harness for AI coding agents and developer shells. Launch opencode, codex, claude, kimi-cli, aider, or any shell — then right-click to split panes horizontally or vertically, drag to resize, switch tools mid-session without losing context, and inherit your SSH session into every new split.
 
-Built with Rust + Tauri + xterm.js. Ships as a single small native binary on
-Windows, Linux, and macOS.
+Built with Rust + Tauri 2 + Svelte 5 + xterm.js. Ships as a single native binary on Windows, with Linux and macOS builds possible from source.
 
-## Status
+## Download
 
-Early development. Core architecture in place:
+Windows builds are available on the [Releases page](https://github.com/flashosophy/OpenSplit/releases).
 
-- [x] Project scaffold
-- [x] PTY abstraction over `portable-pty` (Windows ConPTY + Unix PTY)
-- [x] Binary pane tree with horizontal/vertical splits
-- [x] Drag-to-resize splitters
-- [x] xterm.js per pane wired to backend PTY
-- [x] Right-click context menu (split H / split V / close)
-- [x] Profile config (default profile: `opencode`)
-- [x] SSH inheritance scaffolding (ControlMaster + foreground-process detection)
-- [ ] Polished theming / settings UI
-- [ ] Tabs
-- [ ] Session save/restore
+Two options:
 
-## Quick start (development)
+- **NSIS setup** (`OpenSplit_x.x.x_x64-setup.exe`) — installs to Program Files with a Start Menu shortcut.
+- **MSI** (`OpenSplit_x.x.x_x64_en-US.msi`) — standard Windows installer, useful for enterprise / managed deployments.
+- **Portable exe** (`opensplit-x.x.x-windows-x64.exe`) — single file, no installer needed. Drop it anywhere and run.
 
-Prerequisites:
+Before running a downloaded binary, compare its SHA256 hash against the value in the release notes. Optionally scan with [VirusTotal](https://www.virustotal.com/).
 
-- Rust stable (`rustup default stable`)
-- Node 20+
-- Platform deps for Tauri 2 (see [tauri.app](https://tauri.app/start/prerequisites/))
+## What it does
 
-```bash
-# install JS deps
-npm install
+**Auto-detects installed AI tools on launch.** The first time you run OpenSplit (and any time you click Refresh in Settings), it scans your PATH for known tools:
 
-# run dev (hot-reload frontend, native window)
-npm run tauri dev
+- [opencode](https://opencode.ai)
+- [Codex CLI](https://github.com/openai/codex)
+- [Claude Code](https://claude.ai/code)
+- [Kimi Code](https://kimi.moonshot.cn) (`kimi-cli`)
+- [Gemini CLI](https://github.com/google-gemini/gemini-cli)
+- [aider](https://aider.chat)
+- cursor-agent, sgpt, and more
+- Your system shell (PowerShell / bash / zsh)
 
-# build a release binary + installer (.msi / .exe on Windows, .AppImage / .deb on Linux)
-npm run tauri build
+If no AI tools are found it launches your shell directly. If exactly one is found it can be set as the default.
+
+**Persistent launcher picker.** When no default is set, a centered picker shows detected tools as clickable cards. Keyboard-navigable (arrows, Enter, 1–9). Check "Remember as default" to skip the picker next time.
+
+**Right-click pane splits.**
+
+```
+right-click a pane →
+  Copy                    Ctrl+Shift+C
+  Paste                   Ctrl+Shift+V
+  ────────────────────────────────────
+  Split Horizontal        Ctrl+Shift+H
+  Split Vertical          Ctrl+Shift+E
+  ────────────────────────────────────
+  Switch to ▶
+    ● opencode            (current, bullet)
+      codex
+      kimi-cli
+      Shell
+  ────────────────────────────────────
+  Close Pane              Ctrl+Shift+W
 ```
 
-The built binary is at `src-tauri/target/release/opensplit(.exe)` and platform
-installers under `src-tauri/target/release/bundle/`.
+Split as many times as you like. Each split produces two independent PTY sessions.
 
-## Usage
+**Switch tools without losing layout.** Right-click → Switch to → pick any detected tool. The current pane's process is closed and the new tool opens in its place in the same position, inheriting the working directory where possible.
 
-```bash
-opensplit                # launches the default profile (opencode)
-opensplit codex          # launches the named profile
-opensplit -- bash -l     # raw command, no profile
+**Shell fallback on exit.** When a tool finishes (e.g. you Ctrl+C out of opencode), the pane respawns as your default shell instead of going blank or closing. From the shell you can run `opencode`, `codex`, or anything else. Close the pane when you are done.
+
+**SSH session inheritance.** Splitting a pane whose foreground process is `ssh` re-runs the same `ssh` command in the new pane. With [OpenSSH ControlMaster](https://developer.mozilla.org/en-US/docs/Mozilla/Projects/NSS/Reference/NSS_reference/ssher#ControlMaster) configured, the new pane connects instantly without re-authentication. Without it, a normal SSH login runs.
+
+```
+# Add to ~/.ssh/config for instant re-use:
+Host *
+  ControlMaster auto
+  ControlPath ~/.ssh/cm-%r@%h:%p
+  ControlPersist 10m
 ```
 
-Inside a pane:
+**Working directory inheritance on split.** New panes open in the working directory of the foreground process in the source pane, not in `$HOME`.
 
-- **Right-click** → copy / paste / split horizontal / split vertical / close
-- **Drag a splitter border** to resize
-- **Ctrl+Shift+C** copy selection · **Ctrl+Shift+V** paste
-- **Ctrl+Shift+H** (or `-`) split horizontal — divider runs horizontally, panes stacked
-- **Ctrl+Shift+E** (or `|`) split vertical — divider runs vertically, panes side by side
-- **Ctrl+Shift+W** close focused pane
-- **Ctrl+,** open Settings
+**Activity indicator.** An unfocused pane that has received new output shows a pulsing blue dot in its header. The dot clears when you click into the pane.
+
+**Copy / Paste.** `Ctrl+Shift+C` copies the xterm selection to the system clipboard. `Ctrl+Shift+V` pastes from clipboard using xterm's bracketed-paste mode (multi-line content is safe in shells that support it).
+
+**Window size persistence.** The window remembers its size between sessions. First launch opens at 1/4 of your primary monitor, centered.
+
+**Settings panel.** `Ctrl+,` or the gear icon opens Settings:
+
+- Change or clear the default profile.
+- Refresh tool detection (useful after installing a new CLI).
+- Toggle SSH session inheritance.
+- Shows the config file path and build version.
+
+**Augmented PATH.** Shells spawned by OpenSplit receive an enriched PATH that includes `%APPDATA%\npm`, `~/.cargo/bin`, `~/.local/bin`, `~/.bun/bin`, scoop shims, pnpm, and other common per-user developer tool directories — even when OpenSplit was launched via a GUI shortcut that inherited only the narrow system PATH.
+
+## Keyboard shortcuts
+
+| Action | Shortcut |
+|---|---|
+| Copy selection | `Ctrl+Shift+C` |
+| Paste | `Ctrl+Shift+V` |
+| Split horizontal (panes stacked) | `Ctrl+Shift+H` |
+| Split vertical (panes side by side) | `Ctrl+Shift+E` |
+| Close focused pane | `Ctrl+Shift+W` |
+| Open Settings | `Ctrl+,` |
+| Quit | `Ctrl+Q` |
 
 ## Configuration
 
-Config lives at:
+Config file locations:
 
 - Windows: `%APPDATA%\opensplit\config.toml`
-- Linux: `$XDG_CONFIG_HOME/opensplit/config.toml` (usually `~/.config/opensplit/config.toml`)
+- Linux: `~/.config/opensplit/config.toml`
 - macOS: `~/Library/Application Support/opensplit/config.toml`
 
-A default config is created on first run. See `opensplit.example.toml` in the
-repo for all options.
+A default config is created on first launch. Example:
 
-## SSH inheritance
+```toml
+# Set a default tool to skip the picker on launch.
+# Remove or comment out to always show the picker.
+default_profile = "opencode"
 
-When you split a pane whose foreground process is `ssh`, OpenSplit will try, in
-order:
+# Inherit SSH session into new splits (default: true).
+ssh_inherit = true
 
-1. **OpenSSH ControlMaster** — if the source `ssh` invocation has a control
-   socket, the new pane reuses it. Instant, no re-auth. Configure once in your
-   `~/.ssh/config`:
+# Optional: add custom profiles or override defaults.
+[profiles.myserver]
+command = "ssh"
+args = ["user@myserver.example.com"]
+```
 
-   ```
-   Host *
-     ControlMaster auto
-     ControlPath ~/.ssh/cm-%r@%h:%p
-     ControlPersist 10m
-   ```
+## CLI usage
 
-2. **Command replay** — OpenSplit detects the `ssh user@host` command from the
-   process tree and re-runs it in the new pane.
+```
+opensplit                  # launcher picker (or default profile if set)
+opensplit codex            # launch the named profile or detected tool
+opensplit -- bash -l       # raw command, bypasses profile lookup
+```
 
-3. **Fallback** — spawns the default shell; you re-ssh manually.
+## Build from source
+
+### Prerequisites
+
+- **Rust stable** from [rustup.rs](https://rustup.rs/)
+- **Node.js 20+** from [nodejs.org](https://nodejs.org/)
+- **WebView2 runtime** — ships with Windows 11; [download for Windows 10](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)
+- Visual Studio Build Tools (Windows) or equivalent C++ toolchain
+- On Linux: Tauri's [system dependencies](https://tauri.app/start/prerequisites/#linux)
+
+On this workstation, known-good tool locations:
+
+```
+C:\Program Files\nodejs\node.exe
+C:\Users\flash\.cargo\bin\cargo.exe
+```
+
+### Install dependencies
+
+```powershell
+npm install
+```
+
+### Dev mode (hot-reload frontend, live Rust backend)
+
+```powershell
+# Ensure cargo is on PATH first:
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+npm run tauri -- dev
+```
+
+### Windows release build
+
+```powershell
+.\Build-Windows.ps1
+```
+
+Produces:
+
+```
+dist\opensplit-0.1.0-windows-x64.exe           # portable single-file exe
+dist\opensplit-0.1.0-windows-x64.exe.sha256    # SHA256 checksum
+
+src-tauri\target\release\bundle\nsis\OpenSplit_0.1.0_x64-setup.exe
+src-tauri\target\release\bundle\msi\OpenSplit_0.1.0_x64_en-US.msi
+```
+
+### Manual build (any platform)
+
+```powershell
+npm run build                       # frontend
+cargo build --release \
+  --manifest-path src-tauri/Cargo.toml
+# or via npm:
+npm run tauri -- build
+```
+
+### Check before committing
+
+```powershell
+npm run check                       # Svelte type check
+cargo check --manifest-path src-tauri/Cargo.toml
+```
 
 ## Architecture
 
 ```
 opensplit/
-├── src-tauri/              Rust backend
+├── src-tauri/                  Rust backend (Tauri 2)
 │   ├── src/
-│   │   ├── main.rs         entry, window mgmt, command registration
-│   │   ├── pty.rs          portable-pty wrapper, async read/write
-│   │   ├── session.rs      foreground-process detection, SSH inheritance
-│   │   ├── config.rs       TOML config + profile resolution
-│   │   └── ipc.rs          Tauri command handlers, event bridge
+│   │   ├── main.rs             binary entry point
+│   │   ├── lib.rs              Tauri setup, plugin registration, CLI parsing
+│   │   ├── config.rs           TOML config, profile resolution, save/load
+│   │   ├── detect.rs           PATH scan for known AI CLIs and shells
+│   │   ├── pty.rs              portable-pty wrapper, PATH augmentation,
+│   │   │                       .cmd/.bat→cmd.exe wrapping, reader/waiter threads
+│   │   ├── session.rs          foreground-process detection, SSH inheritance,
+│   │   │                       cwd inheritance on split
+│   │   └── ipc.rs              all Tauri command handlers, AppState
 │   ├── Cargo.toml
+│   ├── build.rs                embeds git hash + date at compile time
 │   └── tauri.conf.json
-├── src/                    Svelte frontend
+├── src/                        Svelte 5 frontend
 │   ├── lib/
-│   │   ├── PaneTree.ts     recursive binary tree (Leaf | Split)
-│   │   ├── ipc.ts          typed Tauri command wrappers
+│   │   ├── ipc.ts              typed Tauri command wrappers
+│   │   ├── PaneTree.ts         recursive binary tree (Leaf | Split)
+│   │   ├── terminalInstances.ts  persistent xterm instances (survives splits)
+│   │   ├── terminalRegistry.ts   per-pane handle registry for copy/paste
+│   │   ├── clipboard.ts        clipboard read/write via Tauri plugin
 │   │   └── theme.ts
-│   ├── components/
-│   │   ├── App.svelte
-│   │   ├── PaneView.svelte recursive renderer
-│   │   ├── Terminal.svelte xterm.js host for one pane
-│   │   ├── Splitter.svelte drag-resize divider
-│   │   └── ContextMenu.svelte
-│   └── main.ts
-└── opensplit.example.toml
+│   └── components/
+│       ├── App.svelte          root: boot, routing, keyboard, all actions
+│       ├── PaneView.svelte     recursive pane tree renderer
+│       ├── Terminal.svelte     thin xterm host (borrows persistent instance)
+│       ├── Splitter.svelte     drag-resize divider
+│       ├── ContextMenu.svelte  right-click menu with Switch submenu
+│       ├── LauncherPicker.svelte  first-launch tool picker
+│       └── SettingsPanel.svelte   settings overlay
+└── Build-Windows.ps1           Windows release build script
 ```
 
-A pane is a binary tree node:
+Pane layout is a recursive binary tree:
 
 ```ts
 type PaneNode =
-  | { kind: "leaf"; id: string; paneId: string; profile: string }
+  | { kind: "leaf"; id: string; paneId: string; profile: string | null; title: string }
   | { kind: "split"; id: string; direction: "h" | "v"; ratio: number; a: PaneNode; b: PaneNode }
 ```
 
-Splitting a leaf replaces it with a `split` node whose two children are the
-original leaf + a new leaf. This makes "split twice for three panes, three
-times for four, etc." trivial and recursive.
+Splitting a leaf replaces it with a split node containing the original leaf and a new one. Closing a leaf promotes its sibling. Switching replaces the paneId on the leaf in-place using `{#key node.paneId}` in the view so xterm re-attaches cleanly.
 
-## Contributing
+xterm instances live in `terminalInstances.ts` keyed by paneId, independent of the component tree. When a pane is split or re-rendered, the view's `attach()` call moves the existing xterm DOM element into the new host instead of creating a new canvas. Scrollback and cursor position survive splits.
 
-PRs welcome. Please run `cargo fmt && cargo clippy` and `npm run check` before
-opening a PR.
+## Versioning
+
+Build version is embedded at compile time as `{semver} · {date} · {hash}` and shown in the Settings panel footer.
+
+## For AI agents
+
+If you are an AI coding agent working in this repository:
+
+1. Do not commit `node_modules/`, `dist/`, `src-tauri/target/`, or `src-tauri/gen/`.
+2. Do not commit `.env*` files, API keys, or secrets of any kind.
+3. Rust changes require rebuilding. Svelte-only changes rebuild in ~3 seconds. Rust rebuilds take 2–5 minutes on a warm incremental build.
+4. The binary name is `opensplit` (not `opensplit-lib`). The lib crate is `opensplit_lib`.
+5. Cargo is at `$env:USERPROFILE\.cargo\bin\cargo.exe` on this workstation. Add it to PATH before running cargo commands: `$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"`.
+6. npm may resolve to a broken shim on Windows. If `npm` fails, use `& "C:\Program Files\nodejs\npm.cmd"` directly.
+7. Before handing off a release binary, run `.\Build-Windows.ps1` from the repo root.
+8. After a successful build, the portable exe is in `dist\`, installers in `src-tauri\target\release\bundle\`.
+9. Commit first, then build, so the release binary contains the correct git hash in its version string.
+10. For public binary releases, include SHA256 hashes in release notes. The build script prints them.
+11. The config file written on first run lives at `%APPDATA%\opensplit\config.toml` on Windows.
+12. `OPENSPLIT_LOG=debug` enables verbose PTY/session/detection tracing to stderr.
+13. `tauri-plugin-window-state` restores SIZE only (not position) to avoid off-screen windows on multi-monitor setups.
+14. Pane tree mutations are immutable transforms that return a new root. Svelte sees the change reactively.
 
 ## License
 

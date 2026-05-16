@@ -9,11 +9,19 @@
     closePane,
     getStartupAction,
     getShellSpec,
+    getToolsCached,
+    paneForegroundInfo,
     resolveSplitSpec,
     setDefaultProfile,
     spawnPane,
+    writePane,
+    onPaneData,
+    onPaneExit,
+    resizePane,
     type DetectedTool,
     type LaunchSpec,
+    type PaneDataEvent,
+    type PaneExitEvent,
     type SpawnSource,
     type StartupAction,
   } from "../lib/ipc";
@@ -37,7 +45,6 @@
     type PaneNode,
     type SplitDirection,
   } from "../lib/PaneTree";
-  import { onPaneData, onPaneExit, resizePane, type PaneDataEvent, type PaneExitEvent } from "../lib/ipc";
   import type { UnlistenFn } from "@tauri-apps/api/event";
 
   let tree = $state<PaneNode | null>(null);
@@ -56,7 +63,11 @@
     y: number;
     paneId: string;
     hasSelection: boolean;
+    currentProfile: string | null;
   } | null>(null);
+
+  /** Cached tool list for the Switch submenu — loaded once at boot. */
+  let availableTools = $state<DetectedTool[]>([]);
 
   let unlistenData: UnlistenFn | null = null;
   let unlistenExit: UnlistenFn | null = null;
@@ -77,7 +88,11 @@
     ]);
 
     try {
-      const action: StartupAction = await getStartupAction();
+      const [action, tools] = await Promise.all([
+        getStartupAction(),
+        getToolsCached(),
+      ]);
+      availableTools = tools;
       if (action.kind === "launch") {
         await spawnFromSpec(action.spec);
       } else {
@@ -123,7 +138,6 @@
       // Ask backend for the cwd of the dying process's foreground descendant.
       let cwd: string | null = null;
       try {
-        const { paneForegroundInfo } = await import("../lib/ipc");
         const fg = await paneForegroundInfo(e.pane_id);
         cwd = fg?.cwd ?? null;
       } catch { /* best-effort */ }
@@ -136,10 +150,9 @@
       );
 
       // Create a new xterm instance for the fresh shell pane.
-      await createInstance(spawned.pane_id, (data) => {
-        void import("../lib/ipc").then(({ writePane }) =>
-          writePane(spawned.pane_id, data).catch(() => {}),
-        );
+      const respawnId = spawned.pane_id;
+      await createInstance(respawnId, (data) => {
+        void writePane(respawnId, data).catch(() => {});
       });
       // Re-wire the data/exit listeners are global, so they route automatically.
 
@@ -164,26 +177,21 @@
   async function spawnFromSpec(spec: LaunchSpec) {
     const result = await spawnPane({ kind: "spec", spec }, INITIAL_COLS, INITIAL_ROWS);
     const title = spec.profile ?? spec.command;
-
-    // Create the persistent xterm instance and wire keystroke→PTY.
-    await createInstance(result.pane_id, (data) => {
-      void import("../lib/ipc").then(({ writePane }) =>
-        writePane(result.pane_id, data).catch(() => {}),
-      );
+    const paneId = result.pane_id;
+    await createInstance(paneId, (data) => {
+      void writePane(paneId, data).catch(() => {});
     });
-
-    tree = makeLeaf(result.pane_id, spec.profile, title);
-    focusedPaneId = result.pane_id;
+    tree = makeLeaf(paneId, spec.profile, title);
+    focusedPaneId = paneId;
   }
 
   async function spawnAndAttachLeaf(source: SpawnSource, title: string): Promise<{ paneId: string }> {
     const result = await spawnPane(source, INITIAL_COLS, INITIAL_ROWS);
-    await createInstance(result.pane_id, (data) => {
-      void import("../lib/ipc").then(({ writePane }) =>
-        writePane(result.pane_id, data).catch(() => {}),
-      );
+    const paneId = result.pane_id;
+    await createInstance(paneId, (data) => {
+      void writePane(paneId, data).catch(() => {});
     });
-    return { paneId: result.pane_id };
+    return { paneId };
   }
 
   // ---------------------------------------------------------------------------
@@ -240,9 +248,16 @@
   function openContextMenu(ev: MouseEvent, paneId: string) {
     ev.preventDefault();
     ev.stopPropagation();
-    setFocusedPane(paneId);          // shallow — keeps activity dot alive
+    setFocusedPane(paneId);
     const hasSelection = getSelection(paneId).length > 0;
-    ctxMenu = { x: ev.clientX, y: ev.clientY, paneId, hasSelection };
+    const leaf = tree ? findLeafByPaneId(tree, paneId) : null;
+    ctxMenu = {
+      x: ev.clientX,
+      y: ev.clientY,
+      paneId,
+      hasSelection,
+      currentProfile: leaf?.profile ?? null,
+    };
   }
 
   function closeContextMenu() {
@@ -277,6 +292,45 @@
       focusInstance(paneId);
     } catch (e) {
       console.error("[opensplit] split failed", e);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Switch (replace current pane's process with a different tool)
+  // ---------------------------------------------------------------------------
+
+  async function performSwitch(paneId: string, tool: DetectedTool) {
+    if (!tree) return;
+    const leaf = findLeafByPaneId(tree, paneId);
+    if (!leaf) return;
+
+    // Kill the running PTY and destroy its xterm instance.
+    try { await closePane(paneId); } catch {}
+    destroyInstance(paneId);
+
+    // Spawn the new tool. Inherit the old pane's cwd from its last foreground
+    // process if possible, so "switch to codex" opens in the same directory.
+    let cwd: string | null = null;
+    try {
+      const fg = await paneForegroundInfo(paneId);
+      cwd = fg?.cwd ?? null;
+    } catch { /* best-effort */ }
+
+    try {
+      const result = await spawnPane(
+        { kind: "detected", name: tool.name },
+        INITIAL_COLS,
+        INITIAL_ROWS,
+      );
+      const newPaneId = result.pane_id;
+      await createInstance(newPaneId, (data) => {
+        void writePane(newPaneId, data).catch(() => {});
+      });
+      tree = replaceLeafPaneId(tree, leaf.id, newPaneId, tool.label);
+      focusedPaneId = newPaneId;
+      focusInstance(newPaneId);
+    } catch (e) {
+      console.error("[opensplit] switch failed", e);
     }
   }
 
@@ -436,10 +490,13 @@
       x={ctxMenu.x}
       y={ctxMenu.y}
       hasSelection={ctxMenu.hasSelection}
+      currentProfile={ctxMenu.currentProfile}
+      {availableTools}
       onCopy={() => { const p = ctxMenu!.paneId; closeContextMenu(); void performCopy(p); }}
       onPaste={() => { const p = ctxMenu!.paneId; closeContextMenu(); void performPaste(p); }}
       onSplitHorizontal={() => { const p = ctxMenu!.paneId; closeContextMenu(); void performSplit(p, "v"); }}
       onSplitVertical={() => { const p = ctxMenu!.paneId; closeContextMenu(); void performSplit(p, "h"); }}
+      onSwitchTo={(tool) => { const p = ctxMenu!.paneId; closeContextMenu(); void performSwitch(p, tool); }}
       onClose={() => { const p = ctxMenu!.paneId; closeContextMenu(); void performClose(p); }}
     />
   {/if}

@@ -23,6 +23,10 @@ pub struct AppState {
     /// from `-- cmd ...`. When set, the launcher picker is skipped.
     pub cli_override: parking_lot::RwLock<Option<CliOverride>>,
     pub panes: PaneRegistry,
+    /// Cached detection results. Built on first call, invalidated when the
+    /// user presses "Refresh" in Settings. Fast enough to re-scan on demand
+    /// but caching means right-click is instantaneous.
+    pub cached_tools: parking_lot::Mutex<Option<Vec<DetectedTool>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -39,6 +43,7 @@ impl AppState {
             config: parking_lot::RwLock::new(config),
             cli_override: parking_lot::RwLock::new(cli_override),
             panes: PaneRegistry::default(),
+            cached_tools: parking_lot::Mutex::new(None),
         }
     }
 }
@@ -193,12 +198,29 @@ fn default_shell_args() -> Vec<String> { vec!["-l".into()] }
 // Detection + profiles
 // ---------------------------------------------------------------------------
 
-/// Re-scan PATH for installed tools. Called by the Settings panel's refresh
-/// button after the user installs new software.
+/// Re-scan PATH for installed tools. Invalidates + rebuilds the cache.
+/// Called by the Settings panel Refresh button and the initial boot.
 #[tauri::command]
 pub fn detect_tools(state: State<'_, Arc<AppState>>) -> Vec<DetectedTool> {
     let cfg = state.config.read();
-    detect::detect_all(&cfg.profiles)
+    let tools = detect::detect_all(&cfg.profiles);
+    *state.cached_tools.lock() = Some(tools.clone());
+    tools
+}
+
+/// Return cached detection results without re-scanning. If no cache exists yet
+/// (e.g. right-click before Settings was opened), scans once and caches.
+/// Used by the context menu switch submenu so right-clicking is instant.
+#[tauri::command]
+pub fn get_tools_cached(state: State<'_, Arc<AppState>>) -> Vec<DetectedTool> {
+    let mut cache = state.cached_tools.lock();
+    if let Some(ref tools) = *cache {
+        return tools.clone();
+    }
+    let cfg = state.config.read();
+    let tools = detect::detect_all(&cfg.profiles);
+    *cache = Some(tools.clone());
+    tools
 }
 
 #[derive(Debug, Serialize)]
