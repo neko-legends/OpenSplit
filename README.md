@@ -85,20 +85,20 @@ Split as many times as you like. Each split produces two independent PTY session
 
 ```
 # Example:
-ssh eva
+ssh my-server
 ```
 
 If your normal local SSH setup can log in without a password, duplicated SSH panes do not ask for a password either. The recommended setup is an SSH key and a `~/.ssh/config` entry, for example:
 
 ```
-Host eva
-  HostName eva
-  User jun
-  IdentityFile ~/.ssh/eva_ed25519
+Host my-server
+  HostName example.com
+  User my-user
+  IdentityFile ~/.ssh/my_server_ed25519
   IdentitiesOnly yes
 ```
 
-Then `ssh eva` works the same in every pane. If `ssh eva` still asks for a password in your regular terminal, OpenSplit will ask too.
+Then `ssh my-server` works the same in every pane. If `ssh my-server` still asks for a password in your regular terminal, OpenSplit will ask too.
 
 **Working directory inheritance on split.** New panes open in the working directory of the foreground process in the source pane, not in `$HOME`.
 
