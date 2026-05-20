@@ -125,11 +125,6 @@
     height: 6px;
     border-radius: 50%;
     background: var(--accent);
-    animation: pulse 1.5s ease-in-out infinite;
-  }
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.35; }
   }
   .leaf.focused .pane-header {
     color: var(--fg);

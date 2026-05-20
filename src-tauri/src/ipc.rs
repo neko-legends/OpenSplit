@@ -250,6 +250,7 @@ pub fn list_profiles(state: State<'_, Arc<AppState>>) -> Vec<ProfileSummary> {
 pub struct ConfigSnapshot {
     pub default_profile: Option<String>,
     pub ssh_inherit: bool,
+    pub low_gpu_mode: bool,
     pub config_path: Option<String>,
 }
 
@@ -259,6 +260,7 @@ pub fn get_config(state: State<'_, Arc<AppState>>) -> ConfigSnapshot {
     ConfigSnapshot {
         default_profile: cfg.default_profile.clone(),
         ssh_inherit: cfg.ssh_inherit,
+        low_gpu_mode: cfg.low_gpu_mode,
         config_path: config::config_path().map(|p| p.display().to_string()),
     }
 }
@@ -295,6 +297,24 @@ pub fn set_ssh_inherit(
     {
         let mut cfg = state.config.write();
         cfg.ssh_inherit = args.enabled;
+        cfg.save().map_err(err)?;
+    }
+    Ok(get_config(state))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetLowGpuModeArgs {
+    pub enabled: bool,
+}
+
+#[tauri::command]
+pub fn set_low_gpu_mode(
+    state: State<'_, Arc<AppState>>,
+    args: SetLowGpuModeArgs,
+) -> Result<ConfigSnapshot, String> {
+    {
+        let mut cfg = state.config.write();
+        cfg.low_gpu_mode = args.enabled;
         cfg.save().map_err(err)?;
     }
     Ok(get_config(state))

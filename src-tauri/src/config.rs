@@ -30,6 +30,10 @@ pub struct Config {
     #[serde(default = "default_true")]
     pub ssh_inherit: bool,
 
+    /// Reduce terminal repaint frequency for lower GPU usage.
+    #[serde(default = "default_true")]
+    pub low_gpu_mode: bool,
+
     /// Named profiles. Empty by default; users add via Settings or by editing
     /// the file directly. Detection in `detect.rs` knows about common tools
     /// without requiring a profile entry.
@@ -64,6 +68,7 @@ impl Config {
         Self {
             default_profile: None,
             ssh_inherit: true,
+            low_gpu_mode: true,
             profiles: HashMap::new(),
         }
     }

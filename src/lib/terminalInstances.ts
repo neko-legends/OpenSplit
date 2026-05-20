@@ -30,6 +30,12 @@ export interface TerminalInstance {
   paneId: string;
   /** Unprocessed output that arrived before the first host attached. */
   earlyChunks: string[];
+  /** Output waiting to be flushed into xterm. Coalesced to cap paint churn. */
+  pendingChunks: string[];
+  pendingCharCount: number;
+  flushTimer: number;
+  lastFlushAt: number;
+  interactiveUntil: number;
   /** Whether this instance has been opened into a DOM element yet. */
   opened: boolean;
 }
@@ -62,6 +68,14 @@ const XTERM_THEME = {
 
 const OSC52_CLIPBOARD_TARGETS = new Set(["c", "p", "s", "0", "1", "2", "3", "4", "5", "6", "7"]);
 const OSC52_MAX_DECODED_BYTES = 4 * 1024 * 1024;
+const VISIBLE_OUTPUT_FLUSH_MS = 66;
+const LOW_GPU_OUTPUT_FLUSH_MS = 1000;
+const INTERACTIVE_OUTPUT_FLUSH_MS = 16;
+const INTERACTIVE_GRACE_MS = 500;
+const HIDDEN_OUTPUT_FLUSH_MS = 250;
+const MAX_PENDING_OUTPUT_CHARS = 4 * 1024 * 1024;
+let visibilityFlushInstalled = false;
+let lowGpuMode = false;
 
 function decodeOsc52Payload(data: string): string | null {
   const semicolon = data.indexOf(";");
@@ -102,6 +116,93 @@ function installOsc52ClipboardHandler(term: Terminal): void {
   });
 }
 
+function outputFlushIntervalMs(): number {
+  if (lowGpuMode) return LOW_GPU_OUTPUT_FLUSH_MS;
+  return document.visibilityState === "hidden"
+    ? HIDDEN_OUTPUT_FLUSH_MS
+    : VISIBLE_OUTPUT_FLUSH_MS;
+}
+
+function instanceFlushIntervalMs(inst: TerminalInstance): number {
+  if (lowGpuMode && performance.now() < inst.interactiveUntil) {
+    return INTERACTIVE_OUTPUT_FLUSH_MS;
+  }
+  return outputFlushIntervalMs();
+}
+
+function flushPendingOutput(inst: TerminalInstance): void {
+  if (inst.flushTimer) {
+    window.clearTimeout(inst.flushTimer);
+    inst.flushTimer = 0;
+  }
+  if (!inst.opened || inst.pendingChunks.length === 0) return;
+
+  const chunk = inst.pendingChunks.length === 1
+    ? inst.pendingChunks[0]
+    : inst.pendingChunks.join("");
+  inst.pendingChunks.length = 0;
+  inst.pendingCharCount = 0;
+  inst.lastFlushAt = performance.now();
+
+  try {
+    inst.term.write(chunk);
+  } catch {
+    /* instance may be mid-destroy; ignore */
+  }
+}
+
+function scheduleOutputFlush(inst: TerminalInstance): void {
+  if (inst.flushTimer || !inst.opened) return;
+
+  const elapsed = performance.now() - inst.lastFlushAt;
+  const delay = Math.max(0, instanceFlushIntervalMs(inst) - elapsed);
+  inst.flushTimer = window.setTimeout(() => {
+    inst.flushTimer = 0;
+    flushPendingOutput(inst);
+  }, delay);
+}
+
+function queueOutput(inst: TerminalInstance, chunk: string): void {
+  inst.pendingChunks.push(chunk);
+  inst.pendingCharCount += chunk.length;
+
+  if (inst.pendingCharCount >= MAX_PENDING_OUTPUT_CHARS) {
+    flushPendingOutput(inst);
+  } else {
+    scheduleOutputFlush(inst);
+  }
+}
+
+function installVisibilityFlush(): void {
+  if (visibilityFlushInstalled) return;
+  visibilityFlushInstalled = true;
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    for (const inst of instances.values()) {
+      flushPendingOutput(inst);
+    }
+  });
+}
+
+export function setTerminalLowGpuMode(enabled: boolean): void {
+  lowGpuMode = enabled;
+  if (!enabled) {
+    for (const inst of instances.values()) {
+      flushPendingOutput(inst);
+    }
+  }
+}
+
+export function noteTerminalUserInput(paneId: string): void {
+  const inst = instances.get(paneId);
+  if (!inst) return;
+  inst.interactiveUntil = performance.now() + INTERACTIVE_GRACE_MS;
+
+  if (inst.pendingChunks.length > 0) {
+    flushPendingOutput(inst);
+  }
+}
+
 /**
  * Create a new persistent xterm instance for a pane. Call once per paneId
  * (typically right after spawn_pane succeeds). The instance is NOT yet opened
@@ -114,6 +215,8 @@ export async function createInstance(
   paneId: string,
   onData: (data: string) => void,
 ): Promise<TerminalInstance> {
+  installVisibilityFlush();
+
   // Lazy imports — only load xterm when we actually need it.
   const [{ Terminal }, { FitAddon }, { WebLinksAddon }] = await Promise.all([
     import("@xterm/xterm"),
@@ -128,7 +231,7 @@ export async function createInstance(
       "'Cascadia Code', 'JetBrains Mono', 'Fira Code', Menlo, Consolas, 'Liberation Mono', monospace",
     fontSize: 13,
     lineHeight: 1.15,
-    cursorBlink: true,
+    cursorBlink: false,
     cursorStyle: "block",
     allowTransparency: false,
     scrollback: 5000,
@@ -148,6 +251,11 @@ export async function createInstance(
     element: null as unknown as HTMLElement, // set in attach()
     paneId,
     earlyChunks: [],
+    pendingChunks: [],
+    pendingCharCount: 0,
+    flushTimer: 0,
+    lastFlushAt: 0,
+    interactiveUntil: 0,
     opened: false,
   };
 
@@ -172,7 +280,7 @@ export function attach(paneId: string, host: HTMLElement): void {
     inst.element = host.firstElementChild as HTMLElement ?? host;
     inst.opened = true;
     // Flush early chunks.
-    for (const chunk of inst.earlyChunks) inst.term.write(chunk);
+    for (const chunk of inst.earlyChunks) queueOutput(inst, chunk);
     inst.earlyChunks.length = 0;
   } else {
     // Move the existing xterm DOM subtree into the new host.
@@ -213,11 +321,7 @@ export function writeToInstance(paneId: string, chunk: string): void {
   if (!inst.opened) {
     inst.earlyChunks.push(chunk);
   } else {
-    try {
-      inst.term.write(chunk);
-    } catch {
-      /* instance may be mid-destroy; ignore */
-    }
+    queueOutput(inst, chunk);
   }
 }
 
@@ -269,6 +373,9 @@ export function destroyInstance(paneId: string): void {
   const inst = instances.get(paneId);
   if (!inst) return;
   instances.delete(paneId);
+  if (inst.flushTimer) {
+    window.clearTimeout(inst.flushTimer);
+  }
   try {
     inst.term.dispose();
   } catch {

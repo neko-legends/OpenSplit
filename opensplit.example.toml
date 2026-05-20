@@ -14,6 +14,9 @@ default_profile = "opencode"
 # OpenSSH ControlMaster socket). Set to false to always launch the fallback.
 ssh_inherit = true
 
+# Reduce terminal repaint frequency to once per second.
+low_gpu_mode = true
+
 # Profiles -------------------------------------------------------------------
 # Each profile is `[profiles.<name>]` with:
 #   command = "..."       (executable, resolved on PATH)

@@ -7,6 +7,7 @@
   import SettingsPanel from "./SettingsPanel.svelte";
   import {
     closePane,
+    getConfig,
     getStartupAction,
     getShellSpec,
     getToolsCached,
@@ -31,7 +32,9 @@
     destroyInstance,
     focusInstance,
     getSelection,
+    noteTerminalUserInput,
     pasteToInstance,
+    setTerminalLowGpuMode,
     writeToInstance,
   } from "../lib/terminalInstances";
   import {
@@ -103,6 +106,8 @@
         getStartupAction(),
         getToolsCached(),
       ]);
+      const cfg = await getConfig();
+      setTerminalLowGpuMode(cfg.low_gpu_mode);
       availableTools = tools;
       if (action.kind === "launch") {
         await spawnFromSpec(action.spec);
@@ -130,7 +135,7 @@
   function handlePaneData(e: PaneDataEvent) {
     writeToInstance(e.pane_id, e.chunk);
     // Mark as active if not the focused pane (activity indicator).
-    if (e.pane_id !== focusedPaneId) {
+    if (e.pane_id !== focusedPaneId && !activePane.has(e.pane_id)) {
       activePane = new Set([...activePane, e.pane_id]);
     }
   }
@@ -168,6 +173,7 @@
       // Create a new xterm instance for the fresh shell pane.
       const respawnId = spawned.pane_id;
       await createInstance(respawnId, (data) => {
+        noteTerminalUserInput(respawnId);
         void writePane(respawnId, data).catch(() => {});
       });
       // Re-wire the data/exit listeners are global, so they route automatically.
@@ -195,6 +201,7 @@
     const title = spec.profile ?? spec.command;
     const paneId = result.pane_id;
     await createInstance(paneId, (data) => {
+      noteTerminalUserInput(paneId);
       void writePane(paneId, data).catch(() => {});
     });
     tree = makeLeaf(paneId, spec.profile, title);
@@ -205,6 +212,7 @@
     const result = await spawnPane(source, INITIAL_COLS, INITIAL_ROWS);
     const paneId = result.pane_id;
     await createInstance(paneId, (data) => {
+      noteTerminalUserInput(paneId);
       void writePane(paneId, data).catch(() => {});
     });
     return { paneId };

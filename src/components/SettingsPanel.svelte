@@ -6,8 +6,10 @@
     getConfig,
     getVersion,
     setDefaultProfile,
+    setLowGpuMode,
     setSshInherit,
   } from "../lib/ipc";
+  import { setTerminalLowGpuMode } from "../lib/terminalInstances";
 
   interface Props {
     onClose: () => void;
@@ -28,6 +30,7 @@
     try {
       const [c, t, v] = await Promise.all([getConfig(), detectTools(), getVersion()]);
       config = c;
+      setTerminalLowGpuMode(c.low_gpu_mode);
       tools = t;
       version = v;
     } catch (e) {
@@ -60,6 +63,17 @@
     if (!config) return;
     try {
       config = await setSshInherit(!config.ssh_inherit);
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function toggleLowGpuMode() {
+    if (!config) return;
+    const enabled = !config.low_gpu_mode;
+    try {
+      config = await setLowGpuMode(enabled);
+      setTerminalLowGpuMode(config.low_gpu_mode);
     } catch (e) {
       error = String(e);
     }
@@ -171,6 +185,20 @@
           <span>
             When splitting an SSH pane, re-run the same connection in the new
             pane (reuses OpenSSH ControlMaster when configured).
+          </span>
+        </label>
+      </section>
+
+      <section class="section">
+        <h3>Rendering</h3>
+        <label class="toggle">
+          <input
+            type="checkbox"
+            checked={config.low_gpu_mode}
+            onchange={toggleLowGpuMode}
+          />
+          <span>
+            Low GPU mode: update terminal output once per second.
           </span>
         </label>
       </section>

@@ -32,6 +32,7 @@ export type StartupAction =
 export interface ConfigSnapshot {
   default_profile: string | null;
   ssh_inherit: boolean;
+  low_gpu_mode: boolean;
   config_path: string | null;
 }
 
@@ -103,6 +104,10 @@ export function setDefaultProfile(name: string | null): Promise<ConfigSnapshot> 
 
 export function setSshInherit(enabled: boolean): Promise<ConfigSnapshot> {
   return invoke("set_ssh_inherit", { args: { enabled } });
+}
+
+export function setLowGpuMode(enabled: boolean): Promise<ConfigSnapshot> {
+  return invoke("set_low_gpu_mode", { args: { enabled } });
 }
 
 // PTY -------------------------------------------------------------------------

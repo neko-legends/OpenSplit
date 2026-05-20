@@ -75,24 +75,33 @@ Invoke-Npm run tauri -- build
 
 $releaseDir = "src-tauri\target\release"
 $exeSrc     = "$releaseDir\opensplit.exe"
-$distDir    = "dist"
-New-Item -ItemType Directory -Force -Path $distDir | Out-Null
+$releaseOutDir = "release"
+New-Item -ItemType Directory -Force -Path $releaseOutDir | Out-Null
 $version = & "$cargobin\cargo.exe" metadata --manifest-path "src-tauri\Cargo.toml" --no-deps --format-version 1 2>$null |
     ConvertFrom-Json | Select-Object -ExpandProperty packages |
     Where-Object { $_.name -eq "opensplit" } |
     Select-Object -First 1 -ExpandProperty version
 if (-not $version) { throw "Could not determine OpenSplit version from src-tauri\Cargo.toml" }
 
-Remove-Item "$distDir\opensplit-*-windows-x64.exe" -Force -ErrorAction SilentlyContinue
-Remove-Item "$distDir\opensplit-*-windows-x64.exe.sha256" -Force -ErrorAction SilentlyContinue
+Remove-Item "$releaseOutDir\opensplit-*-windows-x64.exe" -Force -ErrorAction SilentlyContinue
+Remove-Item "$releaseOutDir\opensplit-*-windows-x64.exe.sha256" -Force -ErrorAction SilentlyContinue
 
 if (Test-Path $exeSrc) {
     $hash = (Get-FileHash $exeSrc -Algorithm SHA256).Hash.ToLower()
-    $destExe  = "$distDir\opensplit-$version-windows-x64.exe"
-    $destHash = "$distDir\opensplit-$version-windows-x64.exe.sha256"
+    $destExe  = "$releaseOutDir\opensplit-$version-windows-x64.exe"
+    $destHash = "$releaseOutDir\opensplit-$version-windows-x64.exe.sha256"
 
-    Copy-Item $exeSrc $destExe -Force
-    Set-Content $destHash "$hash  opensplit-$version-windows-x64.exe" -Encoding ASCII
+    try {
+        Copy-Item $exeSrc $destExe -Force
+    } catch {
+        $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+        $destExe  = "$releaseOutDir\opensplit-$version-windows-x64-$stamp.exe"
+        $destHash = "$destExe.sha256"
+        Copy-Item $exeSrc $destExe -Force
+        Write-Warning "Default portable exe was locked; wrote timestamped build instead."
+    }
+    $hash = (Get-FileHash $destExe -Algorithm SHA256).Hash.ToLower()
+    Set-Content $destHash "$hash  $(Split-Path $destExe -Leaf)" -Encoding ASCII
 
     Write-Host ""
     Write-Host "=== Build complete ===" -ForegroundColor Green

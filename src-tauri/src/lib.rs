@@ -98,6 +98,7 @@ pub fn run() {
             ipc::get_config,
             ipc::set_default_profile,
             ipc::set_ssh_inherit,
+            ipc::set_low_gpu_mode,
             ipc::spawn_pane,
             ipc::write_pane,
             ipc::resize_pane,
